@@ -56,6 +56,8 @@ DEFAULT_BUILDERS = {
     "dp": "perinv.baselines.dp_policy:build",
     "ss": "perinv.baselines.s_S:build",
     "newsvendor": "perinv.baselines.newsvendor:build",
+    "ss_h": "perinv.baselines.s_S:build_h",                   # horizon-aware: no orders in the last τ days
+    "newsvendor_h": "perinv.baselines.newsvendor:build_h",    # horizon-aware: no orders in the last τ days
 }
 DEFAULT_ENV_FACTORY = "perinv.env.perishable_env:PerishableInventoryEnv"
 
