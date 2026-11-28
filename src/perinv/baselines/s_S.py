@@ -26,14 +26,19 @@ from perinv.eval.evaluate import evaluate
 
 
 class SSPolicy:
-    def __init__(self, cfg: EnvConfig, s: np.ndarray, S: np.ndarray):
+    def __init__(self, cfg: EnvConfig, s: np.ndarray, S: np.ndarray, horizon_aware: bool = False):
         self.capacity = cfg.capacity
         self.s, self.S = np.asarray(s, np.int64), np.asarray(S, np.int64)
+        # Horizon-aware variant: an order placed on day t arrives on day t + τ, so orders in the
+        # last τ days of the episode never arrive. From day T − τ on, order nothing.
+        self.cutoff = cfg.horizon - cfg.lead_time if horizon_aware else None
 
     def reset(self) -> None:
         pass
 
     def act(self, obs: np.ndarray, info: dict) -> np.ndarray:
+        if self.cutoff is not None and int(info["state"]["t"]) >= self.cutoff:
+            return np.zeros(len(self.s), np.int64)
         ip = inventory_position(info)
         q = np.where(ip <= self.s, self.S - ip, 0)
         return fit_to_capacity(q, remaining_capacity(info, self.capacity))
@@ -49,25 +54,32 @@ def grid(cfg: EnvConfig) -> list[tuple[int, int]]:
     return [(s, S) for S in range(1, s_max + 1) for s in range(0, S)]
 
 
-def search(cfg: EnvConfig, make_env, tune_demand: np.ndarray) -> tuple[tuple[int, int], float, list[dict]]:
+def search(cfg: EnvConfig, make_env, tune_demand: np.ndarray,
+           horizon_aware: bool = False) -> tuple[tuple[int, int], float, list[dict]]:
     """Best (s, S) by mean profit on the tune paths. Returns ((s, S), profit, all candidates)."""
     env = make_env(cfg)
     rows = []
     for s, S in grid(cfg):
-        profit = float(evaluate(SSPolicy(cfg, *per_sku(cfg, s, S)), env, tune_demand).per_path()["profit"].mean())
+        pol = SSPolicy(cfg, *per_sku(cfg, s, S), horizon_aware=horizon_aware)
+        profit = float(evaluate(pol, env, tune_demand).per_path()["profit"].mean())
         rows.append({"s": s, "S": S, "tune_profit": profit})
     best = max(rows, key=lambda r: (r["tune_profit"], -r["S"], -r["s"]))
     return (best["s"], best["S"]), best["tune_profit"], rows
 
 
-def build(ctx) -> SSPolicy:
+def build(ctx, horizon_aware: bool = False) -> SSPolicy:
     """Runner builder: grid search on ctx.cfg's tune paths (the build world, never the eval world)."""
     t0 = time.perf_counter()
     tune = load_paths(ctx.cfg, "tune", ctx.crn_root)
-    (s, S), profit, rows = search(ctx.cfg, ctx.make_env, tune)
+    (s, S), profit, rows = search(ctx.cfg, ctx.make_env, tune, horizon_aware=horizon_aware)
     s_i, S_i = per_sku(ctx.cfg, s, S)
     ctx.run.update(ss={"s": s, "S": S, "s_per_sku": s_i.tolist(), "S_per_sku": S_i.tolist(),
-                       "tune_profit": profit, "grid_size": len(rows),
+                       "tune_profit": profit, "grid_size": len(rows), "horizon_aware": horizon_aware,
                        "search_seconds": round(time.perf_counter() - t0, 2)})
     ctx.run.log("ss_ready", s=s, S=S, tune_profit=round(profit, 3), grid_size=len(rows))
-    return SSPolicy(ctx.cfg, s_i, S_i)
+    return SSPolicy(ctx.cfg, s_i, S_i, horizon_aware=horizon_aware)
+
+
+def build_h(ctx) -> SSPolicy:
+    """Runner builder for the horizon-aware (s,S): no orders in the last τ days, grid search with the same rule."""
+    return build(ctx, horizon_aware=True)

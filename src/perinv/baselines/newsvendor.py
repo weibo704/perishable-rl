@@ -30,8 +30,10 @@ def critical_ratio(cfg: EnvConfig) -> np.ndarray:
 
 
 class NewsvendorPolicy:
-    def __init__(self, cfg: EnvConfig):
+    def __init__(self, cfg: EnvConfig, horizon_aware: bool = False):
         self.cfg = cfg
+        # Horizon-aware variant: orders placed in the last τ days never arrive, so order nothing from day T − τ on.
+        self.cutoff = cfg.horizon - cfg.lead_time if horizon_aware else None
         lam = np.asarray(cfg.demand_mean, float)
         season = np.asarray(cfg.season, float)
         cr = critical_ratio(cfg)
@@ -45,12 +47,19 @@ class NewsvendorPolicy:
 
     def act(self, obs: np.ndarray, info: dict) -> np.ndarray:
         t = int(info["state"]["t"])
+        if self.cutoff is not None and t >= self.cutoff:
+            return np.zeros(self.S.shape[1], np.int64)
         q = np.maximum(self.S[t] - inventory_position(info), 0)
         return fit_to_capacity(q, remaining_capacity(info, self.cfg.capacity))
 
 
-def build(ctx) -> NewsvendorPolicy:
+def build(ctx, horizon_aware: bool = False) -> NewsvendorPolicy:
     """Runner builder: built from ctx.cfg only (the policy's belief in a cross-evaluation)."""
-    pol = NewsvendorPolicy(ctx.cfg)
-    ctx.run.update(newsvendor={"critical_ratio": critical_ratio(ctx.cfg).tolist()})
+    pol = NewsvendorPolicy(ctx.cfg, horizon_aware=horizon_aware)
+    ctx.run.update(newsvendor={"critical_ratio": critical_ratio(ctx.cfg).tolist(), "horizon_aware": horizon_aware})
     return pol
+
+
+def build_h(ctx) -> NewsvendorPolicy:
+    """Runner builder for the horizon-aware newsvendor: no orders in the last τ days."""
+    return build(ctx, horizon_aware=True)
